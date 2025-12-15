@@ -2,6 +2,11 @@
 
 Educational platform demonstrating real-world JWT security vulnerabilities and their defenses.
 
+<div align="center">
+    <img src="docs/UI.png" alt="Screenshot of UI">
+    <em>Screenshot of jwt-playground UI</em>
+</div>
+
 ## Warning
 
 This project contains **intentionally vulnerable code** for educational purposes. **NEVER** use these patterns in production environments.
@@ -33,7 +38,7 @@ This project contains **intentionally vulnerable code** for educational purposes
 
 1. **Clone and setup:**
 ```bash
-git clone <repository>
+git clone https://github.com/iamKimlong/jwt-playground.git
 cd jwt-playground
 chmod +x setup.sh
 ./setup.sh
