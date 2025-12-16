@@ -138,15 +138,16 @@ func loginVulnerable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if creds.Username == "" || creds.Password == "" {
-		sendError(w, "Invalid credentials", http.StatusUnauthorized)
+	// Vulnerable: accepts any credentials
+	if creds.Username == "" {
+		sendError(w, "Username required", http.StatusBadRequest)
 		return
 	}
 
 	claims := Claims{
 		Username: creds.Username,
 		Role:     "user",
-		Admin:    creds.Username == "admin",
+		Admin:    creds.Username == "admin", // Admin just by username!
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -176,7 +177,14 @@ func loginSecure(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if creds.Username == "" || creds.Password == "" {
+	// Secure: validate credentials (hardcoded for demo)
+	validUsers := map[string]string{
+		"admin": "secure_password",
+		"testuser":  "user_password",
+	}
+
+	expectedPassword, userExists := validUsers[creds.Username]
+	if !userExists || expectedPassword != creds.Password {
 		sendError(w, "Invalid credentials", http.StatusUnauthorized)
 		return
 	}
@@ -184,7 +192,7 @@ func loginSecure(w http.ResponseWriter, r *http.Request) {
 	claims := Claims{
 		Username: creds.Username,
 		Role:     "user",
-		Admin:    creds.Username == "admin" && creds.Password == "secure_password",
+		Admin:    creds.Username == "admin",
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(15 * time.Minute)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
