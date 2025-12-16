@@ -19,10 +19,11 @@ import (
 )
 
 var (
-	jwtSecret      = []byte(os.Getenv("JWT_SECRET"))
-	rsaPrivateKey  *rsa.PrivateKey
-	rsaPublicKey   *rsa.PublicKey
-	tokenBlacklist = make(map[string]time.Time)
+	jwtSecret        = []byte(os.Getenv("JWT_SECRET"))
+	rsaPrivateKey    *rsa.PrivateKey
+	rsaPublicKey     *rsa.PublicKey
+	rsaPublicKeyDER  []byte // Store raw DER bytes for algorithm confusion attack
+	tokenBlacklist   = make(map[string]time.Time)
 )
 
 type Credentials struct {
@@ -83,6 +84,10 @@ func loadRSAKeys() {
 		return
 	}
 
+	// Store the raw DER bytes from the PEM file for algorithm confusion attack
+	// This is what Python uses when reading the public key file
+	rsaPublicKeyDER = publicBlock.Bytes
+
 	pubInterface, err := x509.ParsePKIXPublicKey(publicBlock.Bytes)
 	if err != nil {
 		log.Printf("Warning: Failed to parse public key: %v", err)
@@ -94,6 +99,8 @@ func loadRSAKeys() {
 	if !ok {
 		log.Println("Warning: Not an RSA public key")
 	}
+
+	log.Printf("RSA keys loaded successfully. Public key DER length: %d bytes", len(rsaPublicKeyDER))
 }
 
 func main() {
@@ -138,16 +145,22 @@ func loginVulnerable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Vulnerable: accepts any credentials
-	if creds.Username == "" {
-		sendError(w, "Username required", http.StatusBadRequest)
+	// Same credential validation as secure endpoint
+	validUsers := map[string]string{
+		"admin": "secure_password",
+		"user":  "user_password",
+	}
+
+	expectedPassword, userExists := validUsers[creds.Username]
+	if !userExists || expectedPassword != creds.Password {
+		sendError(w, "Invalid credentials", http.StatusUnauthorized)
 		return
 	}
 
 	claims := Claims{
 		Username: creds.Username,
 		Role:     "user",
-		Admin:    creds.Username == "admin", // Admin just by username!
+		Admin:    creds.Username == "admin",
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -155,6 +168,7 @@ func loginVulnerable(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
+	// VULNERABLE: Uses RS256, susceptible to algorithm confusion attack
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	tokenString, err := token.SignedString(rsaPrivateKey)
 	if err != nil {
@@ -179,8 +193,8 @@ func loginSecure(w http.ResponseWriter, r *http.Request) {
 
 	// Secure: validate credentials (hardcoded for demo)
 	validUsers := map[string]string{
-		"admin": "secure_password",
-		"testuser":  "user_password",
+		"admin":    "secure_password",
+		"testuser": "user_password",
 	}
 
 	expectedPassword, userExists := validUsers[creds.Username]
@@ -255,15 +269,19 @@ func vulnerableAlgorithmConfusion(w http.ResponseWriter, r *http.Request) {
 
 	tokenString := strings.Replace(authHeader, "Bearer ", "", 1)
 
+	// VULNERABLE: Accepts both RS256 and HS256
+	// For HS256, uses the raw public key DER bytes as the HMAC secret
+	// This allows an attacker who knows the public key to forge tokens
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(t *jwt.Token) (interface{}, error) {
 		switch t.Method.(type) {
 		case *jwt.SigningMethodRSA:
 			return rsaPublicKey, nil
 		case *jwt.SigningMethodHMAC:
-			publicKeyBytes, _ := x509.MarshalPKIXPublicKey(rsaPublicKey)
-			return publicKeyBytes, nil
+			// VULNERABILITY: Use raw DER bytes from PEM file as HMAC secret
+			// Attacker can read public.pem, extract DER bytes, and sign with HMAC
+			return rsaPublicKeyDER, nil
 		default:
-			return nil, fmt.Errorf("unexpected signing method")
+			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
 	})
 
@@ -282,13 +300,12 @@ func vulnerableAlgorithmConfusion(w http.ResponseWriter, r *http.Request) {
 		"username": claims.Username,
 		"role":     claims.Role,
 		"admin":    claims.Admin,
-		"warning":  "This endpoint is vulnerable to RS256->HS256 confusion attack!",
+		"warning":  "This endpoint is vulnerable to RS256->HS256 algorithm confusion!",
 	})
 }
 
 func vulnerableTimingAttack(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		Token  string `json:"token"`
 		Secret string `json:"secret"`
 	}
 
@@ -297,31 +314,24 @@ func vulnerableTimingAttack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	start := time.Now()
-	secretBytes := []byte(payload.Secret)
-	actualSecret := jwtSecret
-
-	match := true
-	if len(secretBytes) != len(actualSecret) {
-		match = false
-	} else {
-		for i := 0; i < len(secretBytes); i++ {
-			if secretBytes[i] != actualSecret[i] {
-				match = false
-				break
-			}
-			time.Sleep(100 * time.Microsecond)
+	// VULNERABLE: byte-by-byte comparison
+	expectedSecret := string(jwtSecret)
+	for i := 0; i < len(payload.Secret) && i < len(expectedSecret); i++ {
+		if payload.Secret[i] != expectedSecret[i] {
+			time.Sleep(time.Microsecond * 100) // Exaggerated timing difference
+			sendError(w, "Invalid secret", http.StatusUnauthorized)
+			return
 		}
+		time.Sleep(time.Microsecond * 100)
 	}
 
-	duration := time.Since(start)
+	if len(payload.Secret) != len(expectedSecret) {
+		sendError(w, "Invalid secret", http.StatusUnauthorized)
+		return
+	}
 
-	sendSuccess(w, "Timing check complete", map[string]interface{}{
-		"match":       match,
-		"duration_ns": duration.Nanoseconds(),
-		"duration_us": duration.Microseconds(),
-		"secret_len":  len(secretBytes),
-		"warning":     "This endpoint has timing vulnerabilities!",
+	sendSuccess(w, "Secret verified (VULNERABLE: timing attack possible)", map[string]interface{}{
+		"warning": "This endpoint leaks timing information!",
 	})
 }
 
