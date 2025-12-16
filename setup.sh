@@ -6,7 +6,7 @@ echo
 # Generate RSA keys for algorithm confusion demonstrations
 echo "Generating RSA key pair..."
 mkdir -p keys
-openssl genrsa -out keys/private.pem 2048 2>/dev/null
+openssl genrsa -traditional -out keys/private.pem 2048 2>/dev/null
 openssl rsa -in keys/private.pem -pubout -out keys/public.pem 2>/dev/null
 echo "✓ RSA keys generated in keys/ directory"
 echo
